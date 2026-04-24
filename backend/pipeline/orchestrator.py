@@ -14,6 +14,7 @@ from backend.integrations.gemini_client import GeminiClient
 from backend.integrations.kartaview import KartaViewProvider
 from backend.integrations.places_grabmaps import GrabMapsProvider
 from backend.models import FrameLandmark, LandmarkEraFacts, Node, POI, Tour, View
+from backend.pipeline.area_research import AreaResearch, research_area
 from backend.pipeline.extractor import extract_visual_facts
 from backend.pipeline.gate import decide_gate
 from backend.pipeline.geometry import is_named
@@ -101,6 +102,10 @@ async def run_tour_pipeline(
             if settings.fast_landmark_research:
                 facts = _fast_facts(landmarks, tour.eras)
                 _status(session, tour, "researching", "fast landmark facts", total_research, total_research)
+            elif settings.area_research_enabled:
+                area = await research_area(settings=settings, tour_name=tour.name, landmarks=landmarks)
+                facts = _area_facts(landmarks, tour.eras, area)
+                _status(session, tour, "researching", f"area research: {area.area_name}", total_research, total_research)
             else:
                 completed_research = 0
                 for landmark in landmarks:
@@ -353,6 +358,65 @@ def _current_day_fact(landmark: ResolvedLandmark, era: int) -> LandmarkEraVisual
 
 def _fast_facts(landmarks: list[ResolvedLandmark], eras: list[int]) -> list[LandmarkEraVisualFacts]:
     return [_fast_era_fact(landmark, era) for landmark in landmarks for era in eras]
+
+
+def _area_facts(landmarks: list[ResolvedLandmark], eras: list[int], area: AreaResearch) -> list[LandmarkEraVisualFacts]:
+    return [_area_era_fact(landmark, era, area) for landmark in landmarks for era in eras]
+
+
+def _area_era_fact(landmark: ResolvedLandmark, era: int, area: AreaResearch) -> LandmarkEraVisualFacts:
+    if era >= 2020:
+        return _current_day_fact(landmark, era)
+
+    era_label = f"around {era}"
+    source_url = area.sources[0] if area.sources else None
+    address = landmark.resolved_address or landmark.display_name
+    return LandmarkEraVisualFacts(
+        landmark_id=landmark.id,
+        landmark_name=landmark.display_name,
+        era=era,
+        era_label=era_label,
+        overall_confidence="medium" if area.sources else "low",
+        existed_in_era=True,
+        appearance=[
+            VisualFact(
+                fact=f"{landmark.display_name} is treated as a mapped present-day place within the researched area {area.area_name}; keep it aligned to the current reference crop while adapting the facade and street texture to {era_label}.",
+                source_url=source_url,
+                confidence="medium",
+            ),
+            VisualFact(
+                fact=f"The mapped address/context is {address}; use the area research rather than inventing a separate unverified landmark history.",
+                source_url=source_url,
+                confidence="medium",
+            ),
+        ],
+        surrounding_context=[
+            VisualFact(
+                fact=_area_context_text(era, area),
+                source_url=source_url,
+                confidence="medium",
+            )
+        ],
+        explicitly_absent=[
+            VisualFact(
+                fact="Do not add unsupported named monuments, current-day cars, modern glass towers, modern traffic signals, or contemporary signage unless visible in the current reference and appropriate to the target era.",
+                source_url=None,
+                confidence="high",
+            )
+        ],
+        sources_cited=area.sources,
+    )
+
+
+def _area_context_text(era: int, area: AreaResearch) -> str:
+    source_hint = area.text[:900].replace("\n", " ")
+    if era < 1930:
+        period = "early twentieth-century"
+    elif era < 1970:
+        period = "mid-century"
+    else:
+        period = "late twentieth-century"
+    return f"Render {area.area_name} as a {period} Singapore streetscape. Area evidence: {source_hint}"
 
 
 def _fast_era_fact(landmark: ResolvedLandmark, era: int) -> LandmarkEraVisualFacts:

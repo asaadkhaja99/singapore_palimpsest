@@ -31,7 +31,10 @@ class Settings(BaseSettings):
     prefer_cached_streetlevel: bool = True
     use_cached_streetlevel_fallback: bool = True
     cached_streetlevel_max_distance_m: int = 350
-    fast_landmark_research: bool = True
+    fast_landmark_research: bool = False
+    area_research_enabled: bool = True
+    area_research_timeout_s: float = 8.0
+    area_research_max_chars: int = 18000
     fast_poi_enrichment: bool = True
     image_generation_concurrency: int = 4
     image_generation_start_interval_s: float = 0.5
