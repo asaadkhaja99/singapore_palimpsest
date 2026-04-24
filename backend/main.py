@@ -28,8 +28,8 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Palimpsest API", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-        allow_credentials=True,
+        allow_origins=["*"],
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -48,10 +48,14 @@ def create_app() -> FastAPI:
             missing.append("GRABMAPS_API_KEY")
         if not settings.gemini_api_key:
             missing.append("GEMINI_API_KEY")
+        if settings.research_provider == "openai" and not settings.openai_api_key:
+            missing.append("OPENAI_API_KEY")
         return SystemStatusPayload(
             backend_ready=True,
             grabmaps_configured=bool(settings.grabmaps_api_key),
             gemini_configured=bool(settings.gemini_api_key),
+            openai_configured=bool(settings.openai_api_key),
+            research_provider=settings.research_provider,
             kartaview_configured=True,
             full_pipeline_ready=not missing,
             missing=missing,

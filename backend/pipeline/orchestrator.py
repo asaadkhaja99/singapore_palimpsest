@@ -28,6 +28,22 @@ from backend.pipeline.types import Direction, LandmarkEraVisualFacts, NodePlan, 
 
 
 DIRECTIONS: tuple[Direction, ...] = ("N", "E", "S", "W")
+HISTORIC_ANCHOR_HINTS = {
+    "conservation",
+    "dargah",
+    "heritage",
+    "historic",
+    "monument",
+    "mosque",
+    "museum",
+    "national monument",
+    "religious",
+    "shophouse",
+    "shrine",
+    "temple",
+    "church",
+    "clan",
+}
 
 
 @dataclass
@@ -113,7 +129,7 @@ async def run_tour_pipeline(
                         if era >= 2020:
                             facts.append(_current_day_fact(landmark, era))
                         else:
-                            dump = await research_landmark_era(gemini, landmark, era)
+                            dump = await research_landmark_era(gemini, landmark, era, settings=settings)
                             facts.append(await extract_visual_facts(gemini, dump))
                         completed_research += 1
                         _status(session, tour, "researching", "landmark research", completed_research, total_research)
@@ -185,17 +201,19 @@ async def _generate_views_concurrently(
 ) -> None:
     total_views = len(eras) * len(node_plans) * len(DIRECTIONS)
     generated = 0
+    effective_concurrency = max(1, min(settings.image_generation_concurrency, 2))
+    effective_start_interval = max(settings.image_generation_start_interval_s, 2.0)
     _status(
         session,
         tour,
         "generating",
-        f"image generation, concurrency {settings.image_generation_concurrency}",
+        f"image generation, concurrency {effective_concurrency}",
         0,
         total_views,
     )
 
-    semaphore = asyncio.Semaphore(max(1, settings.image_generation_concurrency))
-    rate_limiter = _StartRateLimiter(settings.image_generation_start_interval_s)
+    semaphore = asyncio.Semaphore(effective_concurrency)
+    rate_limiter = _StartRateLimiter(effective_start_interval)
     tasks: list[asyncio.Task[ViewGenerationResult]] = []
     for era in eras:
         for plan in node_plans:
@@ -218,32 +236,39 @@ async def _generate_views_concurrently(
                     )
                 )
 
-    for task in asyncio.as_completed(tasks):
-        result = await task
-        session.add(
-            View(
-                id=new_id("view_"),
-                node_id=result.node_id,
-                era=result.era,
-                direction=result.direction,
-                image_path=result.image_path,
-                prompt_used=result.prompt,
-                reference_view_ids=[],
-                streetlevel_reference_used=True,
-                model_used=result.model,
-                landmarks_grounded=result.grounded_ids,
+    try:
+        for task in asyncio.as_completed(tasks):
+            result = await task
+            session.add(
+                View(
+                    id=new_id("view_"),
+                    node_id=result.node_id,
+                    era=result.era,
+                    direction=result.direction,
+                    image_path=result.image_path,
+                    prompt_used=result.prompt,
+                    reference_view_ids=[],
+                    streetlevel_reference_used=True,
+                    model_used=result.model,
+                    landmarks_grounded=result.grounded_ids,
+                )
             )
-        )
-        session.commit()
-        generated += 1
-        _status(
-            session,
-            tour,
-            "generating",
-            f"image generation, concurrency {settings.image_generation_concurrency}",
-            generated,
-            total_views,
-        )
+            session.commit()
+            generated += 1
+            _status(
+                session,
+                tour,
+                "generating",
+                f"image generation, concurrency {effective_concurrency}",
+                generated,
+                total_views,
+            )
+    except Exception:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 async def _generate_one_view(
@@ -371,6 +396,8 @@ def _area_era_fact(landmark: ResolvedLandmark, era: int, area: AreaResearch) -> 
     era_label = f"around {era}"
     source_url = area.sources[0] if area.sources else None
     address = landmark.resolved_address or landmark.display_name
+    anchor_label = _historical_anchor_label(landmark)
+    anchor_mode = "direct heritage anchor" if _is_historic_anchor(landmark) else "GrabMaps geometry anchor"
     return LandmarkEraVisualFacts(
         landmark_id=landmark.id,
         landmark_name=landmark.display_name,
@@ -380,12 +407,12 @@ def _area_era_fact(landmark: ResolvedLandmark, era: int, area: AreaResearch) -> 
         existed_in_era=True,
         appearance=[
             VisualFact(
-                fact=f"{landmark.display_name} is treated as a mapped present-day place within the researched area {area.area_name}; keep it aligned to the current reference crop while adapting the facade and street texture to {era_label}.",
+                fact=f"{anchor_label} is a {anchor_mode} within the researched area {area.area_name}; keep the same position, massing, and depth from the current reference crop while adapting the facade and street texture to {era_label}.",
                 source_url=source_url,
                 confidence="medium",
             ),
             VisualFact(
-                fact=f"The mapped address/context is {address}; use the area research rather than inventing a separate unverified landmark history.",
+                fact=f"The mapped address/context is {address}; use area-level evidence for unverified frontages and do not treat present-day business names from GrabMaps as historical shop names.",
                 source_url=source_url,
                 confidence="medium",
             ),
@@ -400,6 +427,11 @@ def _area_era_fact(landmark: ResolvedLandmark, era: int, area: AreaResearch) -> 
         explicitly_absent=[
             VisualFact(
                 fact="Do not add unsupported named monuments, current-day cars, modern glass towers, modern traffic signals, or contemporary signage unless visible in the current reference and appropriate to the target era.",
+                source_url=None,
+                confidence="high",
+            ),
+            VisualFact(
+                fact="Do not render present-day GrabMaps business names or logos in historical eras unless a cited source says that exact name existed then.",
                 source_url=None,
                 confidence="high",
             )
@@ -426,15 +458,16 @@ def _fast_era_fact(landmark: ResolvedLandmark, era: int) -> LandmarkEraVisualFac
     era_label = f"around {era}"
     street = landmark.resolved_street or "this Singapore street"
     address = landmark.resolved_address or landmark.display_name
+    anchor_label = _historical_anchor_label(landmark)
     source = "Hackathon fast mode: GrabMaps place identity plus current KartaView/OpenStreetCam reference geometry."
     appearance = [
         VisualFact(
-            fact=f"Use the current reference image only for composition and position of {landmark.display_name}; adapt facade materials, signage, vehicles, and street furniture to {era_label}.",
+            fact=f"Use the current reference image only for composition and position of {anchor_label}; adapt facade materials, signage, vehicles, and street furniture to {era_label}.",
             source_url=None,
             confidence="high",
         ),
         VisualFact(
-            fact=f"The scene is set at {address}; keep this landmark in the same approximate bearing and depth within the frame.",
+            fact=f"The scene is set at {address}; keep this mapped frontage in the same approximate bearing and depth within the frame, but do not preserve present-day business identity in historical eras unless sourced.",
             source_url=None,
             confidence="high",
         ),
@@ -465,6 +498,28 @@ def _fast_era_fact(landmark: ResolvedLandmark, era: int) -> LandmarkEraVisualFac
         explicitly_absent=absent,
         sources_cited=[source],
     )
+
+
+def _historical_anchor_label(landmark: ResolvedLandmark) -> str:
+    if _is_historic_anchor(landmark):
+        return landmark.display_name
+    if landmark.resolved_address:
+        return f"the mapped frontage at {landmark.resolved_address}"
+    street = landmark.resolved_street or "this Singapore street"
+    return f"a mapped frontage on {street}"
+
+
+def _is_historic_anchor(landmark: ResolvedLandmark) -> bool:
+    text = " ".join(
+        str(value or "")
+        for value in (
+            landmark.display_name,
+            landmark.resolved_address,
+            landmark.detection.architectural_style,
+            landmark.detection.label,
+        )
+    ).lower()
+    return any(hint in text for hint in HISTORIC_ANCHOR_HINTS)
 
 
 def _era_context(era: int, street: str) -> str:

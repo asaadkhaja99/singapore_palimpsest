@@ -2,7 +2,7 @@
 
 **A navigable, AI-generated historical street view of Singapore.**
 
-Drop a pin anywhere on the island, pick a direction, and Palimpsest reconstructs how that street looked in **1900, 1950, 1980, and today** — grounded in real places, real walking routes, and cited historical sources. Swipe through eras, tap a landmark, and read why it was there.
+Drop a pin anywhere on the island, pick a direction, and Palimpsest reconstructs how that street looked across historical eras — grounded in real places, real walking routes, and cited historical sources. Swipe through eras, tap a landmark, and read why it was there.
 
 Built for the Grab hackathon. GrabMaps is the spatial backbone of the whole pipeline — without it, the historical scenes would be generic; with it, they're anchored to named, real-world Singapore.
 
@@ -41,7 +41,7 @@ User drops pin  ──►  Grab walking_route  ──►  Sample nodes along pat
                         grounded on the Grab place list for the area
                                                       │
                                                       ▼
-                        Gemini 3 Pro image gen, one per era (1900/1950/1980/today),
+                        Gemini image generation, one view per era and direction,
                         prompt includes Grab landmark names + bearings + distances
                                                       │
                                                       ▼
@@ -106,7 +106,7 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 `GEMINI_API_KEY` powers historical image generation. With `RESEARCH_PROVIDER=openai`, area and landmark research use the OpenAI Responses API web-search tool, constrained to Wikipedia plus Singapore-specific sources by `OPENAI_RESEARCH_DOMAINS`.
 
-See `.env.example` for the full set of tunables (model ids, concurrency, caching, timeouts).
+See `.env.example` for the full set of tunables (model ids, concurrency, and timeouts).
 
 ## Run
 
@@ -114,7 +114,7 @@ Backend:
 
 ```bash
 uv sync
-uv run uvicorn backend.main:app --reload
+uv run uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Frontend:
@@ -122,10 +122,23 @@ Frontend:
 ```bash
 cd frontend
 npm install
-npm run dev
+rm -rf .next
+npm run dev -- --hostname 0.0.0.0 --port 3000
 ```
 
 Open `http://localhost:3000`.
+
+The landing page is live-first:
+
+- **Start Live Tour** opens the map picker so you can choose any Singapore location.
+- **Demo Tour** starts a fresh Telok Ayer Street run.
+- The demo route shown on the page is:
+
+> Demo route  
+> Telok Ayer Street  
+> Strongest grounded-history corridor: temple, mosque, dargah, church, and shophouses.
+
+Every tour is generated from the backend pipeline.
 
 Sanity-check Grab auth end-to-end:
 
@@ -140,15 +153,13 @@ curl "http://localhost:8000/api/places/nearby?lat=1.2809&lng=103.8500&radius_m=1
 ```bash
 uv run python -m scripts.verify_kartaview      # street-level imagery availability
 uv run python -m scripts.verify_projection     # spherical → cardinal crop sanity check
-uv run python -m evals.grounding_eval          # landmark grounding quality
-uv run python scripts/prerender_curated.py     # pre-cache the curated demo tours
 ```
 
 ## API
 
 - `POST /api/tours/resolve` — kick off a tour generation from a lat/lng + heading + radius
 - `GET /api/tours/{id}` — poll / fetch a tour
-- `GET /api/tours/curated` — list pre-rendered demo tours
+- `GET /api/tours/curated` — list the Telok Ayer demo seed
 - `GET /api/places/search?q=...&lat=...&lng=...` — GrabMaps text search passthrough
 - `GET /api/places/nearby?lat=...&lng=...&radius_m=...` — GrabMaps radius search passthrough
 

@@ -8,6 +8,7 @@ from urllib.parse import quote_plus
 import httpx
 
 from backend.config import Settings
+from backend.integrations.openai_client import OpenAIClient, OpenAIUnavailable
 from backend.pipeline.types import ResolvedLandmark
 
 
@@ -22,6 +23,76 @@ class AreaResearch:
 
 
 async def research_area(
+    *,
+    settings: Settings,
+    tour_name: str,
+    landmarks: list[ResolvedLandmark],
+) -> AreaResearch:
+    if settings.research_provider == "openai":
+        try:
+            return await _openai_area_research(settings=settings, tour_name=tour_name, landmarks=landmarks)
+        except OpenAIUnavailable:
+            pass
+        except Exception as exc:
+            sections = [f"OpenAI area research failed, falling back to Wikipedia lookup: {exc}"]
+            fallback = await _wikipedia_area_research(settings=settings, tour_name=tour_name, landmarks=landmarks)
+            fallback.text = "\n\n".join([*sections, fallback.text])
+            return fallback
+    return await _wikipedia_area_research(settings=settings, tour_name=tour_name, landmarks=landmarks)
+
+
+async def _openai_area_research(
+    *,
+    settings: Settings,
+    tour_name: str,
+    landmarks: list[ResolvedLandmark],
+) -> AreaResearch:
+    queries = _area_queries(tour_name, landmarks)
+    area_name = queries[0]
+    mapped_places = "\n".join(
+        f"- {landmark.display_name}"
+        f"{f' at {landmark.resolved_address}' if landmark.resolved_address else ''}"
+        for landmark in landmarks[:12]
+    )
+    source_targets = _singapore_source_targets(area_name)
+    prompt = f"""
+Research concise visual-history context for a generated historical street-view demo in Singapore.
+
+Area: {area_name}
+Tour name: {tour_name}
+Mapped present-day places from GrabMaps:
+{mapped_places}
+
+Use web search, but keep the evidence tight. Prioritize Wikipedia for quick area background, then Singapore-specific
+sources: Roots.gov.sg/NHB, NLB Infopedia or PictureSG, National Archives of Singapore photographs, and URA conservation
+material. Return:
+1. Short area history that affects street appearance.
+2. Era-specific visual cues for historical image generation.
+3. Which mapped places have direct evidence, and which only have area-level support.
+4. Source URLs inline.
+
+Do not invent individual building history. If a mapped place lacks direct evidence, say it should be treated only as a
+present-day mapped anchor whose geometry comes from the reference image and GrabMaps context.
+"""
+    client = OpenAIClient(settings)
+    result = await client.research_text(prompt=prompt)
+    sources = list(dict.fromkeys([*result.sources, *(item["url"] for item in source_targets)]))
+    target_lines = "\n".join(f"- {item['name']}: {item['url']} ({item['use']})" for item in source_targets)
+    text = f"""
+Area-level OpenAI web research for {area_name}.
+
+{result.text}
+
+Singapore-specific source targets used or available for verification:
+{target_lines}
+
+Use this as area-level grounding, not as proof that every nearby POI has individual historical documentation.
+The image prompt must preserve the current reference geometry and avoid inventing named landmarks outside the mapped POI list.
+""".strip()
+    return AreaResearch(area_name=area_name, text=text[: settings.area_research_max_chars], sources=sources)
+
+
+async def _wikipedia_area_research(
     *,
     settings: Settings,
     tour_name: str,
