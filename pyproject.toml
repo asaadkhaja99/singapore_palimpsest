@@ -1,7 +1,25 @@
 [project]
 name = "singapore-palimpsest"
 version = "0.1.0"
-description = "Add your description here"
+description = "AI-generated historical street view for Singapore."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "sqlmodel>=0.0.22",
+    "pydantic>=2.8.0",
+    "pydantic-settings>=2.4.0",
+    "httpx>=0.27.0",
+    "google-genai>=1.0.0",
+    "pillow>=10.4.0",
+    "numpy>=2.0.0",
+    "python-ulid>=2.7.0",
+    "structlog>=24.4.0",
+]
+
+[project.scripts]
+palimpsest = "main:main"
+
+[tool.uv]
+package = false

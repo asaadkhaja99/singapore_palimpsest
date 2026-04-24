@@ -205,3 +205,14 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Palimpsest runtime artifacts
+palimpsest.db
+palimpsest.db-*
+static/img/
+frontend/node_modules/
+frontend/.next/
+
+# Frontend local env
+frontend/.env.local
+frontend/.env*.local

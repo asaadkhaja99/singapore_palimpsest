@@ -1,0 +1,1 @@
+"""Curated tour seed definitions."""
